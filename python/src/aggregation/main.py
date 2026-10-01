@@ -3,6 +3,7 @@ import logging
 import bisect
 
 from common import middleware, message_protocol, fruit_item
+from common.message_protocol.internal import InternalMessageType
 
 ID = int(os.environ["ID"])
 MOM_HOST = os.environ["MOM_HOST"]
@@ -24,38 +25,46 @@ class AggregationFilter:
             MOM_HOST, OUTPUT_QUEUE
         )
         self.fruit_top_by_request = {}
+        self.eof_received_by_request = {}
 
-    def _process_data(self, request_id, fruit, amount):
+    def _process_data(self, request_id, fruit, amount, sum_id):
         logging.info("Processing data message")
         fruit_top = self.fruit_top_by_request.setdefault(request_id, [])
+        logging.info(f"Adding new value of {fruit} with amount {amount} to request {request_id} from sum id {sum_id}")
         for i in range(len(fruit_top)):
             if fruit_top[i].fruit == fruit:
-                fruit_top[i] = fruit_top[i] + fruit_item.FruitItem(
+                updated = fruit_top.pop(i) + fruit_item.FruitItem(
                     fruit, amount
                 )
+                bisect.insort(fruit_top, updated)
                 return
         bisect.insort(fruit_top, fruit_item.FruitItem(fruit, amount))
 
-    def _process_eof(self, request_id):
-        logging.info(f"Received EOF for request {request_id}")
-        fruit_chunk = list(self.fruit_top_by_request.pop(request_id, [])[-TOP_SIZE:])
-        fruit_chunk.reverse()
-        fruit_top = [
-            request_id,
-            *[
-                (item.fruit, item.amount)
-                for item in fruit_chunk
-            ],
-        ]
-        self.output_queue.send(message_protocol.internal.serialize(fruit_top))
+    def _process_eof(self, request_id, sum_id):
+        logging.info(f"Received EOF for request {request_id} from sum {sum_id}")
+        eof_received = self.eof_received_by_request.get(request_id, 0)
+        self.eof_received_by_request[request_id] = eof_received + 1
+        if self.eof_received_by_request[request_id] == SUM_AMOUNT:
+            logging.info(f"Processing EOF for request {request_id} from aggregation {ID}")
+            fruit_chunk = list(self.fruit_top_by_request.pop(request_id, [])[-TOP_SIZE:])
+            fruit_chunk.reverse()
+            fruit_top = [
+                request_id,
+                *[
+                    (item.fruit, item.amount)
+                    for item in fruit_chunk
+                ],
+            ]
+            logging.info(f"Final top fruits for request {request_id} in aggregation {ID}: {fruit_top}")
+            self.output_queue.send(message_protocol.internal.serialize(fruit_top))
 
     def process_messsage(self, message, ack, nack):
         logging.info("Process message")
         fields = message_protocol.internal.deserialize(message)
-        if len(fields) == 3:
-            self._process_data(*fields)
-        else:
-            self._process_eof(*fields)
+        if fields[0] == InternalMessageType.DATA:
+            self._process_data(*fields[1:])
+        elif fields[0] == InternalMessageType.EOF:
+            self._process_eof(*fields[1:])
         ack()
 
     def start(self):
