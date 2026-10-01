@@ -61,7 +61,7 @@ El uso de un exchange compartido evita que un coordinador central tenga que reci
 
 ## Distribución y procesamiento en Aggregation
 
-Para distribuir las frutas entre las instancias `Aggregation`, `SumFilter` calcula un hash SHA-256 de la combinación `request_id` y nombre de fruta, y aplica módulo `AGGREGATION_AMOUNT` al resultado. Así, para una misma solicitud, todas las apariciones de una fruta se envían siempre a la misma instancia `Aggregation`. A la vez, frutas distintas de un mismo `reques_id` pueden procesarse en paralelo en instancias diferentes.
+Para distribuir las frutas entre las instancias `Aggregation`, `SumFilter` calcula un hash SHA-256 de la combinación `request_id` y nombre de fruta, y aplica módulo `AGGREGATION_AMOUNT` al resultado. Así, para una misma solicitud, todas las apariciones de una fruta se envían siempre a la misma instancia `Aggregation`. A la vez, frutas distintas de un mismo `request_id` pueden procesarse en paralelo en instancias diferentes.
 
 Cada instancia `Aggregation` mantiene, por `request_id`, las cantidades recibidas y un contador de mensajes `EOF`, uno por cada instancia `SumFilter`. Al recibir un `DATA`, acumula la cantidad de la fruta en su top parcial y lo mantiene ordenado según la comparación de `FruitItem`. Al recibir un `EOF`, incrementa el contador de esa solicitud. Cuando recibió los `EOF` de todos los `SumFilter`, termina de construir su top parcial y lo publica hacia `Join`.
 
@@ -80,3 +80,11 @@ Descartar los elementos posteriores al top no afecta el resultado final: si una 
 Se incorporó manejo de `SIGTERM` en los procesos consumidores para detener el consumo y cerrar sus conexiones con RabbitMQ antes de finalizar. En las pruebas realizadas, los contenedores de la aplicación registraron la recepción de la señal y finalizaron con código 0.
 
 RabbitMQ también recibe `SIGTERM` durante `make down`, pero en algunas ejecuciones terminó con código 137. Ese código indica que Docker lo forzó a finalizar al vencer el límite de cinco segundos configurado para el apagado. En los logs observados, RabbitMQ alcanzó a detener listeners y message stores, pero no siempre terminó todo su proceso de cierre dentro de ese plazo. Por lo tanto, el resultado de esas pruebas confirma el cierre ordenado de los procesos de la aplicación, pero no un cierre limpio del contenedor de RabbitMQ en todas las ejecuciones.
+
+## Consideraciones sobre fallas y disponibilidad
+
+En la implementacion asumi que todas las instancias necesarias están iniciadas y suscriptas a sus exchanges antes de que comience el procesamiento de una solicitud. No se implementó recuperación ante la caída de una instancia ni ante el inicio tardío de un proceso que, por haberse suscripto después, no haya recibido un mensaje de control publicado previamente. Esto puede afectar especialmente a los mensajes `EOF`: si alguna instancia no recibe el aviso correspondiente, la coordinación puede quedar esperando un conteo o una finalización que nunca llegará.
+
+El único resguardo implementado relacionado con el inicio es local a cada `SumFilter`: el hilo principal espera a que su hilo listener inicialice el exchange de control antes de empezar a consumir mensajes de entrada. La espera tiene un límite de tiempo y se informa un error si el listener no llega a estar listo. Esto asegura el orden de inicio dentro de esa instancia, pero no verifica que los listeners de los demás `SumFilter` o las instancias `Aggregation` estén listos.
+
+El manejo de reinicios, disponibilidad y orden de inicio de los servicios lo entiendo fuera del alcance contemplado para este trabajo práctico. Si fuese por mi probablemente lo manejaria mediante health checks, dependencias de inicio y políticas de reinicio en Docker Compose, configuración que entiendo que no podía modificarse para la entrega.
