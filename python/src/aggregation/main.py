@@ -1,6 +1,7 @@
 import os
 import logging
 import bisect
+import signal
 
 from common import middleware, message_protocol, fruit_item
 from common.message_protocol.internal import InternalMessageType
@@ -26,6 +27,13 @@ class AggregationFilter:
         )
         self.fruit_top_by_request = {}
         self.eof_received_by_request = {}
+
+    def _handle_sigterm(self, signum, frame):
+        logging.info("Aggregation %s received SIGTERM; stopping consumer", ID)
+        try:
+            self.input_exchange.stop_consuming()
+        except Exception as exc:
+            logging.debug("Aggregation consumer already stopped: %s", exc)
 
     def _process_data(self, request_id, fruit, amount, sum_id):
         logging.info("Processing data message")
@@ -68,7 +76,15 @@ class AggregationFilter:
         ack()
 
     def start(self):
-        self.input_exchange.start_consuming(self.process_messsage)
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
+        try:
+            self.input_exchange.start_consuming(self.process_messsage)
+        finally:
+            for exchange in (self.input_exchange, self.output_queue):
+                try:
+                    exchange.close()
+                except Exception as exc:
+                    logging.warning("Could not close Aggregation exchange connection: %s", exc)
 
 
 def main():

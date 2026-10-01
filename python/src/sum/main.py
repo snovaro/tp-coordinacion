@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import hashlib
+import signal
 
 from common import middleware, message_protocol, fruit_item
 from common.message_protocol.internal import InternalMessageType
@@ -31,6 +32,22 @@ class SumFilter:
         self.flushed_requests = set()
         self.listener_ready = threading.Event()
         self.listener_startup_error = None
+        self.shutdown_requested = threading.Event()
+        self.sum_control_listener_exchange = None
+
+    def _handle_sigterm(self, signum, frame):
+        logging.info("Sum %s received SIGTERM; stopping consumers", ID)
+        self.shutdown_requested.set()
+        try:
+            self.input_queue.stop_consuming()
+        except Exception as exc:
+            logging.debug("Input consumer already stopped: %s", exc)
+
+        if self.sum_control_listener_exchange is not None:
+            try:
+                self.sum_control_listener_exchange.stop_consuming()
+            except Exception as exc:
+                logging.debug("Control consumer already stopped: %s", exc)
 
     def _process_data(self, request_id, fruit, amount):
         logging.info(f"Process data")
@@ -174,19 +191,46 @@ class SumFilter:
             self.listener_startup_error = exc
             self.listener_ready.set()
             raise
+        finally:
+            if self.sum_control_listener_exchange is not None:
+                try:
+                    self.sum_control_listener_exchange.close()
+                except Exception as exc:
+                    logging.warning("Could not close Sum control listener: %s", exc)
+            for exchange in self.data_output_exchanges:
+                try:
+                    exchange.close()
+                except Exception as exc:
+                    logging.warning("Could not close Aggregation output exchange: %s", exc)
 
     def start(self):
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
         listener = threading.Thread(
             target=self._listen_other_sums, daemon=True
         )
         listener.start()
-        if not self.listener_ready.wait(timeout=10):
-            raise RuntimeError("El listener de control no inició a tiempo")
-        
-        if self.listener_startup_error:
-            raise RuntimeError("Falló el inicio del listener de control") from self.listener_startup_error
-        
-        self.input_queue.start_consuming(self.process_data_messsage)
+        try:
+            if not self.listener_ready.wait(timeout=10):
+                raise RuntimeError("El listener de control no inició a tiempo")
+
+            if self.listener_startup_error:
+                raise RuntimeError("Falló el inicio del listener de control") from self.listener_startup_error
+
+            if not self.shutdown_requested.is_set():
+                self.input_queue.start_consuming(self.process_data_messsage)
+        finally:
+            self.shutdown_requested.set()
+            if self.sum_control_listener_exchange is not None:
+                try:
+                    self.sum_control_listener_exchange.stop_consuming()
+                except Exception as exc:
+                    logging.debug("Control consumer already stopped: %s", exc)
+            listener.join()
+            for middleware_object in (self.input_queue, self.sum_control_main_exchange):
+                try:
+                    middleware_object.close()
+                except Exception as exc:
+                    logging.warning("Could not close Sum middleware connection: %s", exc)
 
 def main():
     logging.basicConfig(level=logging.INFO)

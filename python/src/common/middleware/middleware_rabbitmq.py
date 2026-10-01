@@ -48,7 +48,8 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 
     def stop_consuming(self):
         try:
-            self.channel.stop_consuming()
+            if self.connection.is_open and self.channel.is_open:
+                self.connection.add_callback_threadsafe(self.channel.stop_consuming)
         except pika.exceptions.AMQPConnectionError as e:
             raise MessageMiddlewareDisconnectedError(f"Failed to connect to RabbitMQ server at {self.host}: {e}")
         except Exception as e:
@@ -128,7 +129,8 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
 
     def stop_consuming(self):
         try:
-            self.channel.stop_consuming()
+            if self.connection.is_open and self.channel.is_open:
+                self.connection.add_callback_threadsafe(self.channel.stop_consuming)
         except pika.exceptions.AMQPConnectionError as e:
             raise MessageMiddlewareDisconnectedError(f"Failed to connect to RabbitMQ server at {self.host}: {e}")
         except Exception as e:

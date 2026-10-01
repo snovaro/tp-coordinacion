@@ -1,5 +1,6 @@
 import os
 import logging
+import signal
 
 from common import middleware, message_protocol, fruit_item
 
@@ -23,6 +24,14 @@ class JoinFilter:
             MOM_HOST, OUTPUT_QUEUE
         )
         self.top_by_request = {}
+
+    def _handle_sigterm(self, signum, frame):
+        logging.info("Join received SIGTERM; stopping consumer")
+        try:
+            self.input_queue.stop_consuming()
+        except Exception as exc:
+            logging.debug("Join consumer already stopped: %s", exc)
+
     def _merge_tops(self, current, new_top):
         merged = []
         i = j = 0
@@ -65,7 +74,15 @@ class JoinFilter:
         ack()
 
     def start(self):
-        self.input_queue.start_consuming(self.process_messsage)
+        signal.signal(signal.SIGTERM, self._handle_sigterm)
+        try:
+            self.input_queue.start_consuming(self.process_messsage)
+        finally:
+            for middleware_object in (self.input_queue, self.output_queue):
+                try:
+                    middleware_object.close()
+                except Exception as exc:
+                    logging.warning("Could not close Join middleware connection: %s", exc)
 
 
 def main():
