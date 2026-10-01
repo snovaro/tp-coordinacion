@@ -22,11 +22,42 @@ class JoinFilter:
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
+        self.top_by_request = {}
+    def _merge_tops(self, left, right):
+        merged = []
+        i = j = 0
+
+        while i < len(left) and j < len(right):
+            if left[i][1] >= right[j][1]:
+                merged.append(left[i])
+                i += 1
+            else:
+                merged.append(right[j])
+                j += 1
+
+        merged.extend(left[i:])
+        merged.extend(right[j:])
+        return merged
 
     def process_messsage(self, message, ack, nack):
         logging.info("Received top")
-        fruit_top = message_protocol.internal.deserialize(message)
-        self.output_queue.send(message_protocol.internal.serialize(fruit_top))
+        fields = message_protocol.internal.deserialize(message)
+        request_id = fields[0]
+        fruits = fields[1:]
+        if request_id not in self.top_by_request:
+            self.top_by_request[request_id] = [fruits[:TOP_SIZE], 1]
+        else:
+            self.top_by_request[request_id] = [
+                self._merge_tops(self.top_by_request[request_id][0], fruits[:TOP_SIZE]),
+                self.top_by_request[request_id][1] + 1
+                ]
+
+        if self.top_by_request[request_id][1] == AGGREGATION_AMOUNT:
+            self.output_queue.send(message_protocol.internal.serialize([
+                request_id,
+                self.top_by_request[request_id][0][:TOP_SIZE]
+            ]))
+            self.top_by_request.pop(request_id)
         ack()
 
     def start(self):

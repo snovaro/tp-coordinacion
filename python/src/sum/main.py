@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import hashlib
 
 from common import middleware, message_protocol, fruit_item
 from common.message_protocol.internal import InternalMessageType
@@ -74,15 +75,15 @@ class SumFilter:
             fruits = self.amount_by_request.pop(request_id, [0, {}])[1]
         logging.info(f"Finalizing request {request_id} with fruits: {fruits} in sum id {ID}")
         for final_fruit_item in fruits.values():
-            for data_output_exchange in self.data_output_exchanges:
-                data_output_exchange.send(
-                    message_protocol.internal.serialize(
-                        [InternalMessageType.DATA, 
-                         request_id, 
-                         final_fruit_item.fruit, 
-                         final_fruit_item.amount, 
-                         ID
-                         ]
+            index = self._aggregation_for(request_id, final_fruit_item.fruit)
+            self.data_output_exchanges[index].send(
+                message_protocol.internal.serialize(
+                    [InternalMessageType.DATA, 
+                        request_id, 
+                        final_fruit_item.fruit, 
+                        final_fruit_item.amount, 
+                        ID
+                        ]
                     )
                 )
 
@@ -93,6 +94,11 @@ class SumFilter:
                 request_id, 
                 ID
                 ]))
+
+    def _aggregation_for(self, request_id, fruit):
+        key = f"{request_id}:{fruit}".encode("utf-8")
+        digest = hashlib.sha256(key).digest()
+        return int.from_bytes(digest, "big") % AGGREGATION_AMOUNT
 
 
     def process_data_messsage(self, message, ack, nack):
@@ -166,7 +172,7 @@ class SumFilter:
 
         except Exception as exc:
             self.listener_startup_error = exc
-            self.listener_ready.set()  # Evita que el hilo principal espere para siempre.
+            self.listener_ready.set()
             raise
 
     def start(self):

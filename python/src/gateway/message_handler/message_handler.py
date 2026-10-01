@@ -27,6 +27,6 @@ class MessageHandler:
 
     def deserialize_result_message(self, message):
         fields = message_protocol.internal.deserialize(message)
-        if (fields[0] == self.request_id): # [request_id, [fruit_1, amount_1], [fruit_2, amount_2]]
-            return fields[1:]
+        if (fields[0] == self.request_id): # [request_id, [[fruit_1, amount_1], [fruit_2, amount_2]]]
+            return fields[1]
         return None
