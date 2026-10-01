@@ -23,20 +23,21 @@ class JoinFilter:
             MOM_HOST, OUTPUT_QUEUE
         )
         self.top_by_request = {}
-    def _merge_tops(self, left, right):
+    def _merge_tops(self, current, new_top):
         merged = []
         i = j = 0
 
-        while i < len(left) and j < len(right):
-            if left[i][1] >= right[j][1]:
-                merged.append(left[i])
+        while i < len(current) and j < len(new_top):
+            current_item = current[i]
+            new_item = new_top[j]
+            if current_item != None and current_item >= new_item:
+                merged.append(current[i])
                 i += 1
             else:
-                merged.append(right[j])
+                merged.append(new_top[j])
                 j += 1
 
-        merged.extend(left[i:])
-        merged.extend(right[j:])
+        merged.extend(current[i:])
         return merged
 
     def process_messsage(self, message, ack, nack):
@@ -44,13 +45,11 @@ class JoinFilter:
         fields = message_protocol.internal.deserialize(message)
         request_id = fields[0]
         fruits = fields[1:]
-        if request_id not in self.top_by_request:
-            self.top_by_request[request_id] = [fruits[:TOP_SIZE], 1]
-        else:
-            self.top_by_request[request_id] = [
-                self._merge_tops(self.top_by_request[request_id][0], fruits[:TOP_SIZE]),
-                self.top_by_request[request_id][1] + 1
-                ]
+        current_top = self.top_by_request.setdefault(request_id, [[None] * TOP_SIZE, 0])[0]
+        self.top_by_request[request_id] = [
+            self._merge_tops(current_top, fruits[:TOP_SIZE]),
+            self.top_by_request[request_id][1] + 1
+            ]
 
         if self.top_by_request[request_id][1] == AGGREGATION_AMOUNT:
             self.output_queue.send(message_protocol.internal.serialize([
